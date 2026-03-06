@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Persistence of Failure - Vibe Game Prototype</title>
+    <style>
+        :root {
+            --bg-color: #050a14;
+            --text-color: #8fa0c0;
+            --player-color: #ffffff;
+            --platform-color: #1a2a40;
+            --platform-border: #2a3a50;
+            --ghost-color: rgba(0, 255, 255, 0.4);
+            --ghost-solid-color: #00ffff;
+            --shortcut-color: rgba(255, 204, 0, 0.3);
+            --shortcut-border: #ffd700;
+            --bridge-color: rgba(255, 0, 255, 0.3);
+            --bridge-border: #ff00ff;
+            --goal-bg: rgba(0, 255, 100, 0.3);
+            --goal-border: #00ff66;
+        }
+
+        /* Vibrant/Neon State */
+        body.vibrant {
+            --bg-color: #1a0524;
+            --text-color: #ff99ff;
+            --platform-color: #3d004a;
+            --platform-border: #6a008a;
+            --ghost-solid-color: #00ffff;
+            --ghost-color: rgba(0, 255, 255, 0.7);
+            --shortcut-color: rgba(255, 204, 0, 0.4);
+            --bridge-color: rgba(255, 0, 255, 0.5);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            transition: background-color 2s ease, color 2s ease;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #game-wrapper {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 255, 255, 0.05);
+            transition: box-shadow 2s ease;
+            border-radius: 8px;
+            padding: 4px;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        body.vibrant #game-wrapper {
+            box-shadow: 0 0 50px rgba(255, 0, 255, 0.2);
+        }
+
+        canvas {
+            display: block;
+            background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.6) 100%);
+            border: 2px solid var(--platform-border);
+            border-radius: 6px;
+            transition: border-color 2s ease;
+        }
+
+        #ui-header {
+            text-align: center;
+            margin-bottom: 20px;
+            width: 800px;
+        }
+
+        h1 {
+            margin: 0 0 15px 0;
+            font-weight: 300;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+        }
+
+        .stats-panel {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            font-size: 1.1rem;
+        }
+
+        .stat-card {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 12px 24px;
+            border-radius: 6px;
+            border: 1px solid var(--platform-border);
+            transition: border-color 2s ease;
+            min-width: 150px;
+        }
+
+        .highlight-counter {
+            color: var(--ghost-solid-color);
+            font-weight: bold;
+            font-size: 1.3rem;
+            margin-left: 8px;
+            text-shadow: 0 0 8px var(--ghost-solid-color);
+        }
+
+        #instructions {
+            margin-top: 20px;
+            color: #556688;
+            font-size: 0.95rem;
+            letter-spacing: 1px;
+            transition: color 2s ease;
+        }
+
+        body.vibrant #instructions {
+            color: #aa77cc;
+        }
+
+        .key {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: white;
+            font-family: monospace;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="ui-header">
+        <h1>Persistence of Failure</h1>
+        <div class="stats-panel">
+            <div class="stat-card">Deaths: <span id="death-count" class="highlight-counter">0</span></div>
+            <div class="stat-card">World State: <span id="world-state" style="color: #fff;">Hard (Default)</span></div>
+        </div>
+    </div>
+
+    <div id="game-wrapper">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+    </div>
+
+    <div id="instructions">
+        Use <span class="key">←</span> <span class="key">→</span> to move, <span class="key">↑</span> to jump. <br />
+        Reach the green GOAL zone on the right. Fall to die.
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const countDisplay = document.getElementById('death-count');
+        const stateDisplay = document.getElementById('world-state');
+
+        // Core Game Variables
+        let deathCount = 0;
+        let isAlive = true;
+
+        // Colors mapping to CSS variables
+        function getThemeColor(varName) {
+            return getComputedStyle(document.body).getPropertyValue(varName).trim();
+        }
+
+        // Physics Constants
+        const GRAVITY = 0.6;
+        const JUMP_POWER = -11;
+        const MOVE_SPEED = 5;
+
+        // Player State
+        const START_POS = { x: 40, y: 350 };
+        let player = {
+            ...START_POS, w: 20, h: 20, vx: 0, vy: 0, grounded: false
+        };
+
+        // Inputs
+        let keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false };
+
+        // --- LEVEL ARCHITECTURE ---
+
+        // Tier 0: Hard Layout (Lots of gaps)
+        const layoutHard = [
+            { x: 0, y: 400, w: 120, h: 50 }, // Start Island
+            { x: 200, y: 350, w: 40, h: 10 },
+            { x: 350, y: 280, w: 40, h: 10 },
+            { x: 500, y: 200, w: 40, h: 10 },
+            { x: 680, y: 400, w: 120, h: 50 }  // End Island
+        ];
+
+        // Tier 3: Safer Geometry (Lower gaps, closer jumps)
+        const layoutSafe = [
+            { x: 0, y: 400, w: 180, h: 50 }, // Wider Start
+            { x: 220, y: 380, w: 80, h: 10 },
+            { x: 380, y: 340, w: 80, h: 10 },
+            { x: 540, y: 380, w: 80, h: 10 },
+            { x: 680, y: 400, w: 120, h: 50 }  // End Island
+        ];
+
+        // Dynamic Elements
+        let currentLayout = layoutHard;
+        let shortcutPlatform = { x: 0, y: 150, w: 800, h: 15, active: false }; // Visible at 5+
+        let bridgeOverlay = { x: 120, y: 400, w: 560, h: 50, active: false }; // Visible at 10+
+
+        const goalZone = { x: 720, y: 350, w: 50, h: 50 };
+
+        // Ghost Data Array (Matches PathManager)
+        let ghosts = []; // Contains { path: [{x,y}], isSolid: bool, frameIndex: int }
+        let trackingPath = []; // Current run's path points
+
+        // --- INPUT LISTENERS ---
+        window.addEventListener('keydown', e => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', e => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = false;
+            }
+        });
+
+        // --- STATE SYNCHRONIZATION ---
+        function updateGameState() {
+            // Apply rules from the prompt specifications
+
+            if (deathCount >= 10) {
+                document.body.classList.add('vibrant');
+                bridgeOverlay.active = true;
+                stateDisplay.innerText = "Level 4: Bridge Overlay Active";
+                stateDisplay.style.color = "#ff99ff";
+            } else if (deathCount >= 8) {
+                currentLayout = layoutSafe; // MapTransition_Layout_B
+                stateDisplay.innerText = "Level 3: Map Layout B (Safer)";
+                stateDisplay.style.color = "#8fa0c0";
+            } else if (deathCount >= 5) {
+                shortcutPlatform.active = true; // EnableShortcut_Layer
+                stateDisplay.innerText = "Level 2: Golden Passage Revealed";
+            } else if (deathCount >= 3) {
+                // Any GhostInstance becomes a StaticBody2D (Solid Platform)
+                ghosts.forEach(g => g.isSolid = true);
+                stateDisplay.innerText = "Level 1: Ghosts Solidified";
+            } else {
+                // deathCount == 0 (Default Hard)
+                stateDisplay.innerText = "Level 0: Hard Layout";
+            }
+            countDisplay.innerText = deathCount;
+        }
+
+        // --- DEATH MECHANIC ---
+        function triggerDeath() {
+            if (!isAlive) return;
+            isAlive = false;
+
+            // On death, store this data array as a GhostInstance
+            if (trackingPath.length > 0) {
+                ghosts.push({
+                    path: [...trackingPath],
+                    isSolid: deathCount >= 3, // Solidify instantly if we already passed threshold
+                    frameIndex: 0
+                });
+            }
+
+            deathCount++;
+            updateGameState();
+
+            // Respawn Delay
+            setTimeout(() => {
+                resetPlayer();
+                isAlive = true;
+
+                // Reset Ethereal Ghosts to start of their loop
+                ghosts.forEach(g => {
+                    if (!g.isSolid) g.frameIndex = 0;
+                });
+            }, 500);
+        }
+
+        function resetPlayer() {
+            player.x = START_POS.x;
+            player.y = START_POS.y;
+            player.vx = 0;
+            player.vy = 0;
+            trackingPath = [];
+        }
+
+        // --- COLLISION LOGIC ---
+        function rectCollision(r1, r2) {
+            return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x &&
+                r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+        }
+
+        function compileCurrentPlatforms() {
+            let activePlatforms = [...currentLayout];
+            if (shortcutPlatform.active) activePlatforms.push(shortcutPlatform);
+            if (bridgeOverlay.active) activePlatforms.push(bridgeOverlay);
+
+            // Inject solid ghosts as platforms matching player's exact bounding box at death
+            ghosts.forEach(g => {
+                if (g.isSolid && g.path.length > 0) {
+                    const deathFrame = g.path[g.path.length - 1]; // Last recorded frame
+                    activePlatforms.push({
+                        x: deathFrame.x, y: deathFrame.y,
+                        w: player.w, h: player.h,
+                        isSolidGhost: true
+                    });
+                }
+            });
+
+            return activePlatforms;
+        }
+
+        // --- MAIN UPDATE LOOP ---
+        function updatePhysics() {
+            if (!isAlive) return;
+
+            player.vy += GRAVITY;
+
+            // X Movement
+            if (keys.ArrowLeft) player.vx = -MOVE_SPEED;
+            else if (keys.ArrowRight) player.vx = MOVE_SPEED;
+            else player.vx = 0;
+
+            if (keys.ArrowUp && player.grounded) {
+                player.vy = JUMP_POWER;
+                player.grounded = false;
+            }
+
+            player.x += player.vx;
+            player.grounded = false;
+
+            const platforms = compileCurrentPlatforms();
+
+            // X Collision
+            for (let p of platforms) {
+                if (rectCollision(player, p)) {
+                    if (player.vx > 0) player.x = p.x - player.w;
+                    else if (player.vx < 0) player.x = p.x + p.w;
+                    player.vx = 0;
+                }
+            }
+
+            // Y Movement
+            player.y += player.vy;
+
+            // Y Collision
+            for (let p of platforms) {
+                if (rectCollision(player, p)) {
+                    if (player.vy > 0) {
+                        player.y = p.y - player.h;
+                        player.grounded = true;
+                    } else if (player.vy < 0) {
+                        player.y = p.y + p.h;
+                    }
+                    player.vy = 0;
+                }
+            }
+
+            // Chasm Check
+            if (player.y > canvas.height) {
+                triggerDeath();
+            }
+
+            // Win Condition
+            if (rectCollision(player, goalZone)) {
+                alert("Course Cleared! Total Deaths: " + deathCount);
+                // Reset to Zero-State
+                deathCount = 0;
+                ghosts = [];
+                shortcutPlatform.active = false;
+                bridgeOverlay.active = false;
+                currentLayout = layoutHard;
+                document.body.classList.remove('vibrant');
+                updateGameState();
+                resetPlayer();
+            }
+
+            // Path Manager: Record Transform Position
+            // In Canvas it runs per frame roughly equal to 60hz
+            trackingPath.push({ x: player.x, y: player.y });
+
+            // Ghost Animation Playback
+            ghosts.forEach(g => {
+                if (!g.isSolid) {
+                    g.frameIndex++;
+                    // Freeze ghost at point of death
+                    if (g.frameIndex >= g.path.length) g.frameIndex = g.path.length - 1;
+                }
+            });
+        }
+
+        // --- RENDERING ---
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Goal
+            ctx.fillStyle = getThemeColor('--goal-bg');
+            ctx.fillRect(goalZone.x, goalZone.y, goalZone.w, goalZone.h);
+            ctx.strokeStyle = getThemeColor('--goal-border');
+            ctx.lineWidth = 2;
+            ctx.strokeRect(goalZone.x, goalZone.y, goalZone.w, goalZone.h);
+            ctx.fillStyle = getThemeColor('--goal-border');
+            ctx.font = '14px sans-serif';
+            ctx.fillText("EXIT", goalZone.x + 10, goalZone.y + 30);
+            ctx.lineWidth = 1;
+
+            // Draw Map Platforms
+            const platforms = compileCurrentPlatforms();
+            platforms.forEach(p => {
+                if (p.isSolidGhost) {
+                    // Render Solidified Block
+                    ctx.fillStyle = getThemeColor('--ghost-solid-color');
+                    ctx.shadowColor = getThemeColor('--ghost-solid-color');
+                    ctx.shadowBlur = 15;
+                    ctx.fillRect(p.x, p.y, p.w, p.h);
+                    ctx.shadowBlur = 0;
+                } else if (p === shortcutPlatform) {
+                    ctx.fillStyle = getThemeColor('--shortcut-color');
+                    ctx.strokeStyle = getThemeColor('--shortcut-border');
+                    ctx.lineWidth = 2;
+                    ctx.fillRect(p.x, p.y, p.w, p.h);
+                    ctx.strokeRect(p.x, p.y, p.w, p.h);
+                    ctx.lineWidth = 1;
+                } else if (p === bridgeOverlay) {
+                    ctx.fillStyle = getThemeColor('--bridge-color');
+                    ctx.strokeStyle = getThemeColor('--bridge-border');
+                    ctx.lineWidth = 2;
+                    ctx.fillRect(p.x, p.y, p.w, p.h);
+                    ctx.strokeRect(p.x, p.y, p.w, p.h);
+                    ctx.lineWidth = 1;
+                } else {
+                    ctx.fillStyle = getThemeColor('--platform-color');
+                    ctx.strokeStyle = getThemeColor('--platform-border');
+                    ctx.fillRect(p.x, p.y, p.w, p.h);
+                    ctx.strokeRect(p.x, p.y, p.w, p.h);
+                }
+            });
+
+            // Draw Ethereal Ghosts & Shader Trails
+            ghosts.forEach(g => {
+                if (!g.isSolid && g.path.length > 0) {
+                    let point = g.path[g.frameIndex] || g.path[g.path.length - 1];
+
+                    // Trail Renderer Equivalent
+                    ctx.beginPath();
+                    ctx.strokeStyle = 'rgba(0, 255, 255, 0.2)';
+                    ctx.lineWidth = player.w;
+                    ctx.lineJoin = 'round';
+                    ctx.lineCap = 'round';
+
+                    let trailLength = 25; // Length of phantom tail
+                    let startIndex = Math.max(0, g.frameIndex - trailLength);
+
+                    for (let i = startIndex; i <= g.frameIndex; i++) {
+                        let centerOffset = player.w / 2;
+                        if (i === startIndex) ctx.moveTo(g.path[i].x + centerOffset, g.path[i].y + centerOffset);
+                        else ctx.lineTo(g.path[i].x + centerOffset, g.path[i].y + centerOffset);
+                    }
+                    ctx.stroke();
+
+                    // Ghost Body Shader Equivalent
+                    ctx.fillStyle = getThemeColor('--ghost-color');
+                    ctx.shadowColor = getThemeColor('--ghost-solid-color');
+                    ctx.shadowBlur = 10;
+                    ctx.fillRect(point.x, point.y, player.w, player.h);
+                    ctx.shadowBlur = 0;
+                }
+            });
+
+            // Draw Player
+            if (isAlive) {
+                ctx.fillStyle = getThemeColor('--player-color');
+                ctx.shadowColor = '#ffffff';
+                ctx.shadowBlur = 10;
+                ctx.fillRect(player.x, player.y, player.w, player.h);
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // --- GAME LOOP INITIATOR ---
+        function loop() {
+            updatePhysics();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        updateGameState();
+        loop();
+    </script>
+</body>
+
+</html>
